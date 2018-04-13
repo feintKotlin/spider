@@ -1,18 +1,21 @@
 package main
 
 import (
+	"io/ioutil"
 	"log"
 	"net/http"
-	"github.com/PuerkitoBio/goquery"
-	"strings"
 	"net/url"
-	"io/ioutil"
 	"os"
+	"strings"
+
+	"github.com/PuerkitoBio/goquery"
+	mgo "gopkg.in/mgo.v2"
+	"gopkg.in/mgo.v2/bson"
 )
 
 //File Type
 const (
-	IMG  = iota
+	IMG = iota
 	JS
 	CSS
 	HTML
@@ -35,24 +38,46 @@ type pageInfo struct {
 	intro string
 }
 
+type site struct {
+	Url string
+}
+
+// 错误处理
 func handleError(err error, msg string) {
 	log.Printf("[ERROR] %s: %s\n", msg, err.Error())
+}
+func handleErrorFatal(err error, msg string) {
+	log.Fatalf("[ERROR] %s: %s\n", msg, err.Error())
+}
+
+// 初始化mongodb
+func initMongoDB(dbName string, collName string) *mgo.Collection {
+	session, err := mgo.Dial("localhost")
+	if err != nil {
+		handleErrorFatal(err, "Failed to Connect MongoDB")
+	}
+	c := session.DB(dbName).C(collName)
+	return c
 }
 
 /**
 参数：
 	urlCh：从该channel中获取相应的url
 	page：将从url请求到的页面内容通过该channel输出
- */
+*/
 func requestHtml(urlCh <-chan string, pageCh chan<- page, urlMap map[string]bool, done chan bool) {
 	client := http.Client{}
-
+	collection := initMongoDB("feint", "site")
 	for {
 		select {
 		case url := <-urlCh:
-			// TODO 使用mongodb来代替map存储
-			if urlMap[url] == false {
-				urlMap[url] = true
+			result := site{}
+			collection.Find(bson.M{"url": url}).One(&result)
+			if len(result.Url) == 0 {
+				err := collection.Insert(&site{url})
+				if err != nil {
+					handleErrorFatal(err, "Failed to Insert Row Data")
+				}
 			} else {
 				break
 			}
@@ -62,7 +87,7 @@ func requestHtml(urlCh <-chan string, pageCh chan<- page, urlMap map[string]bool
 				handleError(err, "[URL] Failed to request this url")
 			} else {
 				log.Printf("[URL] Request url [%s] success\n", url)
-		 		doc, err := goquery.NewDocumentFromReader(req.Body)
+				doc, err := goquery.NewDocumentFromReader(req.Body)
 				if err != nil {
 					handleError(err, "[URL] Failed to get response body")
 				} else {
@@ -247,7 +272,6 @@ func absolutePath(urlStr, src string) (string, bool) {
 }
 
 func main() {
-
 	urlCh := make(chan string, 100)
 	pageCh := make(chan page, 16)
 	fileCh := make(chan file, 24)
@@ -269,5 +293,4 @@ func main() {
 	urlCh <- startUrl.String()
 
 	<-done
-
 }
