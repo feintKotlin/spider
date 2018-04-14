@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -42,14 +43,6 @@ type site struct {
 	Url string
 }
 
-// 错误处理
-func handleError(err error, msg string) {
-	log.Printf("[ERROR] %s: %s\n", msg, err.Error())
-}
-func handleErrorFatal(err error, msg string) {
-	log.Fatalf("[ERROR] %s: %s\n", msg, err.Error())
-}
-
 // 初始化mongodb
 func initMongoDB(dbName string, collName string) *mgo.Collection {
 	session, err := mgo.Dial("localhost")
@@ -65,9 +58,10 @@ func initMongoDB(dbName string, collName string) *mgo.Collection {
 	urlCh：从该channel中获取相应的url
 	page：将从url请求到的页面内容通过该channel输出
 */
-func requestHtml(urlCh <-chan string, pageCh chan<- page, urlMap map[string]bool, done chan bool) {
+func requestHtml(urlCh <-chan string, pageCh chan<- page, done chan bool) {
 	client := http.Client{}
 	collection := initMongoDB("feint", "site")
+	collection.Remove(bson.M{})
 	for {
 		select {
 		case url := <-urlCh:
@@ -145,7 +139,7 @@ func pageContentUtil(fileType int, attr string, url string, selection *goquery.S
 }
 
 func dealHtml(pageCh <-chan page, pageInfoCh chan<- pageInfo,
-	fileCh chan<- file, urlCh chan<- string, host string) {
+	fileCh chan<- file, urlCh chan<- string, single bool) {
 
 	for {
 		select {
@@ -172,7 +166,12 @@ func dealHtml(pageCh <-chan page, pageInfoCh chan<- pageInfo,
 				if href, ok := selection.Attr("href"); ok {
 					if path, ok := absolutePath(pageCh.url, href); ok {
 						log.Printf("[URL] detect Url tag; href = %s\n", href)
-						if host != "" {
+						if single {
+							host, err := urlHost(pageCh.url)
+							if err != nil {
+								handleError(err, "Failed to get Host Name")
+								return
+							}
 							if strings.Contains(path, host) {
 								select {
 								case urlCh <- path:
@@ -271,26 +270,39 @@ func absolutePath(urlStr, src string) (string, bool) {
 	return absPath, true
 }
 
+var urlfileOpt *string = flag.String("uf", "", "Use -uf <filesource>")
+var urlOpt *string = flag.String("u", "https://github.com/feintKotlin/spider", "Use -u <url>")
+var singleOpt *bool = flag.Bool("s", true, "Use -s=<true|false>")
+var dirOpt *string = flag.String("d", "", "Use -d <filedir>")
+
 func main() {
+	flag.Parse()
+	var urlList []string
+	// 从命令行的option中获取url列表
+	if len(*urlfileOpt) == 0 {
+		urlList = append(urlList, *urlOpt)
+	} else {
+		tempList := urlsFromFile(*urlfileOpt)
+		urlList = make([]string, len(tempList))
+		copy(urlList, tempList)
+	}
+	if _, err := os.Stat(*dirOpt); os.IsNotExist(err) {
+		handleErrorFatal(err, "Failed to Find Save Directory")
+	}
 	urlCh := make(chan string, 100)
 	pageCh := make(chan page, 16)
 	fileCh := make(chan file, 24)
 
 	done := make(chan bool)
 
-	startUrl, err := url.Parse("http://www.duowan.com/")
-	if err != nil {
-		handleError(err, "[URL] Bad Url")
+	go requestHtml(urlCh, pageCh, done)
+	go dealHtml(pageCh, nil, fileCh, urlCh, *singleOpt)
+
+	go saveFile(fileCh, *dirOpt)
+
+	for _, startUrl := range urlList {
+		urlCh <- startUrl
 	}
-
-	urlMap := make(map[string]bool)
-
-	go requestHtml(urlCh, pageCh, urlMap, done)
-	go dealHtml(pageCh, nil, fileCh, urlCh, "")
-
-	go saveFile(fileCh, "/Users/feint/spider_test")
-
-	urlCh <- startUrl.String()
 
 	<-done
 }
