@@ -13,3 +13,12 @@ func TestUrlHost(t *testing.T) {
 	}
 
 }
+func TestLoadResourceByType(t *testing.T) {
+	tags, attrs := loadResourceByType("ij")
+	if tags[0] == "img" && tags[1] == "script" &&
+		attrs[0] == "src" && attrs[1] == "src" {
+
+	} else {
+		t.Error("Wrong File Type:", tags, attrs)
+	}
+}
